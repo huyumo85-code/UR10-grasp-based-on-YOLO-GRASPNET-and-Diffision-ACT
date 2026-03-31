@@ -1,0 +1,47 @@
+- ros_topic_name: "/d435/image"
+  gz_topic_name: "/d435/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "ignition.msgs.Image"
+  direction: GZ_TO_ROS
+  publisher_config:
+    reliability: "best_effort"
+
+- ros_topic_name: "/d435/depth_image"
+  gz_topic_name: "/d435/depth_image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "ignition.msgs.Image"
+  direction: GZ_TO_ROS
+  publisher_config:
+    reliability: "best_effort"
+
+- ros_topic_name: "/d435/camera_info"
+  gz_topic_name: "/d435/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "ignition.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+  publisher_config:
+    reliability: "best_effort"
+
+
+- ros_topic_name: "/d435/points"
+  gz_topic_name: "/d435/depth_image/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "ignition.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS
+
+# --- 全局相机配置 ---
+- ros_topic_name: "/camera_global/image"
+  gz_topic_name: "/camera_global/image"  # <--- 注意这里补上了起始斜杠
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "ignition.msgs.Image"
+  direction: GZ_TO_ROS
+  publisher_config:
+    reliability: "best_effort"
+
+- ros_topic_name: "/camera_global/camera_info" # <--- 建议加上，标定和转换需要它
+  gz_topic_name: "/camera_global/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "ignition.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+  publisher_config:
+    reliability: "best_effort"

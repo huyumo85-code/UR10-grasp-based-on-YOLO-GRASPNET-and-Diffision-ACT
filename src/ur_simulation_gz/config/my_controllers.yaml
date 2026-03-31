@@ -1,0 +1,129 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 500  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    io_and_status_controller:
+      type: ur_controllers/GPIOController
+
+    speed_scaling_state_broadcaster:
+      type: ur_controllers/SpeedScalingStateBroadcaster
+
+    joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    scaled_joint_trajectory_controller:
+      type: ur_controllers/ScaledJointTrajectoryController
+
+    forward_velocity_controller:
+      type: velocity_controllers/JointGroupVelocityController
+
+    forward_position_controller:
+      type: position_controllers/JointGroupPositionController
+
+    # === 新增 1：在管家这里为夹爪注册“身份证” ===
+    robotiq_gripper_controller:
+      type: position_controllers/GripperActionController
+
+speed_scaling_state_broadcaster:
+  ros__parameters:
+    state_publish_rate: 100.0
+
+joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    
+    # ================= 关键修改区域 =================
+    # 原因：仿真环境存在重力下垂 (你的误差是 0.2006)
+    # 官方仿真标准做法是放宽 trajectory 容差
+    constraints:
+      stopped_velocity_tolerance: 0.05 # 官方通常更小，这里设为0.05
+      goal_time: 0.6                   # 给予 0.6秒 的到达宽限时间，防止稍微慢一点就报错
+      shoulder_pan_joint: { trajectory: 0.5, goal: 0.1 } # 0.2 -> 0.5
+      shoulder_lift_joint: { trajectory: 0.5, goal: 0.1 } # 0.2 -> 0.5 (这是最容易报错的关节)
+      elbow_joint: { trajectory: 0.5, goal: 0.1 } # 0.2 -> 0.5
+      wrist_1_joint: { trajectory: 0.5, goal: 0.1 }
+      wrist_2_joint: { trajectory: 0.5, goal: 0.1 }
+      wrist_3_joint: { trajectory: 0.5, goal: 0.1 }
+    # ==============================================
+
+# 2. 在具体的参数配置段 (这是你文件里漏掉的，或者没设对的)
+joint_state_broadcaster:
+  ros__parameters:
+    # 就是这一句！它决定了 TF 树的刷新频率
+    publish_rate: 100.0
+    
+scaled_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    speed_scaling_interface_name: "" # 仿真通常没有速度缩放接口，留空是正确的
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    
+    # 同步修改 Scaled 控制器的约束，以防万一
+    constraints:
+      stopped_velocity_tolerance: 0.05
+      goal_time: 0.6
+      shoulder_pan_joint: { trajectory: 0.5, goal: 0.1 }
+      shoulder_lift_joint: { trajectory: 0.5, goal: 0.1 }
+      elbow_joint: { trajectory: 0.5, goal: 0.1 }
+      wrist_1_joint: { trajectory: 0.5, goal: 0.1 }
+      wrist_2_joint: { trajectory: 0.5, goal: 0.1 }
+      wrist_3_joint: { trajectory: 0.5, goal: 0.1 }
+
+forward_velocity_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    interface_name: velocity
+
+forward_position_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+
+# === 新增 2：夹爪的具体参数配置，放在最末尾 ===
+robotiq_gripper_controller:
+  ros__parameters:
+    default: true
+    joint: robotiq_85_left_knuckle_joint
+    use_effort_interface: true
+    use_speed_interface: true

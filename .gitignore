@@ -1,0 +1,21 @@
+# 1. ROS 2 编译与日志 (绝对不能传)
+build/
+install/
+log/
+
+# 2. 庞大的数据集 (1.2GB的罪魁祸首)
+robot_diffusion_data/
+
+# 3. ACT 和 Diffusion 的训练输出与权重
+ACT/outputs/
+*.safetensors
+*.pth
+*.pt
+*.ckpt
+*.weights
+*.onnx
+
+# 4. 杂项缓存
+__pycache__/
+*.pyc
+.vscode/

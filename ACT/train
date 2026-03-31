@@ -1,0 +1,15 @@
+lerobot-train \
+    --policy.type act \
+    --dataset.repo_id hym/ur10_act_dataset \
+    --policy.repo_id hym/ur10_act_policy_v2 \
+    --policy.push_to_hub false \
+    --batch_size 8 \
+    --steps 80000 \
+    --policy.chunk_size 30 \
+    --policy.n_action_steps 30 \
+    --policy.device cuda \
+    --policy.use_amp true \
+    --eval.n_episodes 0 \
+    --eval.batch_size 0 \
+    --save_checkpoint true \
+    --save_freq 10000

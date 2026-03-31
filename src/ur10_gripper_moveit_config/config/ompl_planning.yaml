@@ -1,0 +1,47 @@
+
+planning_plugin: ompl_interface/OMPLPlanner
+
+request_adapters: >-
+  default_planner_request_adapters/AddTimeOptimalParameterization
+  default_planner_request_adapters/ResolveConstraintFrames
+  default_planner_request_adapters/FixWorkspaceBounds
+  default_planner_request_adapters/FixStartStateBounds
+  default_planner_request_adapters/FixStartStateCollision
+  default_planner_request_adapters/FixStartStatePathConstraints
+
+planner_configs:
+  RRTConnect:
+    type: geometric::RRTConnect
+    range: 0.0
+  RRTConnectkConfigDefault:
+    type: geometric::RRTConnect
+    range: 0.0
+  RRTStar:
+    type: geometric::RRTstar
+    range: 0.0
+  TRRT:
+    type: geometric::TRRT
+    range: 0.0
+  PRM:
+    type: geometric::PRM
+    range: 0.0
+
+ur_manipulator:
+  default_planner_config: RRTConnect
+  planner_configs:
+    - RRTConnect
+    - RRTConnectkConfigDefault
+    - RRTStar
+    - TRRT
+    - PRM
+  projection_evaluator: joints(shoulder_pan_joint,shoulder_lift_joint)
+  longest_valid_segment_fraction: 0.005
+
+gripper:
+  default_planner_config: RRTConnect
+  planner_configs:
+    - RRTConnect
+    - RRTConnectkConfigDefault
+    - RRTStar
+    - TRRT
+    - PRM

@@ -1,0 +1,55 @@
+joint_limits:
+  shoulder_pan_joint:
+    has_position_limits: true
+    min_position: -0.7854  # -45度
+    max_position: 0.3316   # 19度
+    has_velocity_limits: true
+    max_velocity: 1.5           
+    has_acceleration_limits: true
+    max_acceleration: 1.0       
+  shoulder_lift_joint:
+    has_position_limits: true
+    min_position: -1.9199  # -110度
+    max_position: -1.0472  # -60度
+    has_velocity_limits: true
+    max_velocity: 1.5           
+    has_acceleration_limits: true
+    max_acceleration: 1.0       
+  elbow_joint:
+    has_position_limits: true
+    min_position: 0.0      # 0度
+    max_position: 2.0944   # 120度
+    has_velocity_limits: true
+    max_velocity: 1.5           
+    has_acceleration_limits: true
+    max_acceleration: 1.0       
+  wrist_1_joint:
+    has_position_limits: true
+    min_position: -2.0944  # -120度
+    max_position: 0.0      # 0度
+    has_velocity_limits: true
+    max_velocity: 2.0           
+    has_acceleration_limits: true
+    max_acceleration: 1.5
+  wrist_2_joint:
+    has_position_limits: true
+    min_position: -3.1415  # -180度
+    max_position: 0.0
+    has_velocity_limits: true
+    max_velocity: 2.0
+    has_acceleration_limits: true
+    max_acceleration: 1.5
+  wrist_3_joint:
+    has_position_limits: true
+    min_position: -3.1415  # -180度
+    max_position: 3.1415
+    has_velocity_limits: true
+    max_velocity: 2.0
+    has_acceleration_limits: true
+    max_acceleration: 1.5
+  # 夹爪保持不变
+  robotiq_85_left_knuckle_joint:
+    has_velocity_limits: true
+    max_velocity: 0.5
+    has_acceleration_limits: true
+    max_acceleration: 1.0

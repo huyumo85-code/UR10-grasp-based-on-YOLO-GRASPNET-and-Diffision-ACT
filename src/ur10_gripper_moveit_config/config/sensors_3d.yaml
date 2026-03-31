@@ -1,0 +1,26 @@
+sensors:
+  - PointCloudOctomapUpdater
+
+PointCloudOctomapUpdater:
+  sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
+  # 1. 确保话题名与 ros2 topic list 看到的一致
+  point_cloud_topic: /d435/points
+  
+  # 2. 坐标系对齐
+  fixed_frame: world
+  
+  # 3. 匹配你的桥接器设置
+  best_effort: true 
+  
+  # 4. 探测范围（建议比机械臂半径大一点）
+  max_range: 3.0
+  
+  # 5. 采样和频率（采样越高越卡，建议先保持 2 或 4）
+  point_subsample: 2
+  max_update_rate: 5.0
+  
+  # 6. 避障安全距离（防止点云把机械臂自己当成障碍物）
+  padding_offset: 0.02
+  padding_scale: 1.0
+  
+  filtered_cloud_topic: filtered_cloud
