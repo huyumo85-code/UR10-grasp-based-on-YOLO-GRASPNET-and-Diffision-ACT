@@ -263,10 +263,11 @@ def train():
               f"Wrist: {avg_wrist:.4f} | "
               f"Grip: {avg_gripper:.4f}")
 
+        save_dir = os.path.dirname(os.path.abspath(__file__))
         if epoch % 50 == 0:
-            torch.save(model.state_dict(), f'diffusion_model_epoch_{epoch}.pth')
+            torch.save(model.state_dict(), os.path.join(save_dir, f'diffusion_model_epoch_{epoch}.pth'))
 
-    torch.save(model.state_dict(), f'diffusion_model_epoch_{NUM_EPOCHS - 1}.pth')
+    torch.save(model.state_dict(), os.path.join(save_dir, f'diffusion_model_epoch_{NUM_EPOCHS - 1}.pth'))
     print("✅ 训练完成！正在保存 loss 曲线...")
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
