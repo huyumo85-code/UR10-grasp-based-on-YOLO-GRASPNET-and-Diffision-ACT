@@ -1,4 +1,4 @@
-import sys 
+import sys
 import rclpy
 from rclpy.node import Node
 import numpy as np
@@ -13,6 +13,12 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from rclpy.action import ActionClient
 from control_msgs.action import GripperCommand
 
+import tf2_ros
+from moveit_msgs.action import MoveGroup
+from moveit_msgs.msg import Constraints, PositionConstraint, OrientationConstraint, BoundingVolume, WorkspaceParameters
+from shape_msgs.msg import SolidPrimitive
+from geometry_msgs.msg import Pose
+
 # 你录制时使用的绝对起点
 HOME_JOINTS = [-0.28, -1.61, 0.91, -0.84, -1.57, -0.24]
 
@@ -22,40 +28,45 @@ class TemporalEnsembler:
         self.preds = []
         self.step = 0
 
-    # 🌟 修改 1：将前瞻调小为 2，让机械臂紧紧贴合当前预测轨迹，减少超调
     def update_and_get(self, new_traj, lookahead=2):
         self.preds.append((self.step, np.array(new_traj)))
         self.preds = [p for p in self.preds if p[0] + self.horizon > self.step + lookahead]
-        
+
         current_actions = []
         weights = []
         for p_step, traj in self.preds:
             idx = (self.step + lookahead) - p_step
             if 0 <= idx < self.horizon:
                 current_actions.append(traj[idx])
-                weights.append(np.exp(-idx * 0.5)) 
-            
+                weights.append(np.exp(-idx * 0.5))
+
+        # 修复：空列表 fallback，防止除零崩溃
+        if not current_actions:
+            self.step += 1
+            return np.array(new_traj[0])
+
         weights = np.array(weights) / np.sum(weights)
         ensembled_action = np.average(current_actions, axis=0, weights=weights)
-        
         self.step += 1
         return ensembled_action
 
 class RosDiffusionManager(Node):
     def __init__(self):
         super().__init__(
-            'ros_diffusion_manager',
-            allow_undeclared_parameters=True, 
+            'ros_act_manager',
+            allow_undeclared_parameters=True,
             automatically_declare_parameters_from_overrides=True
         )
         self.bridge = CvBridge()
-        self.latest_rgb = None        
-        self.latest_global_rgb = None 
-        self.vis_img = None 
-        self.current_joint_pos = None 
+        self.latest_rgb = None
+        self.latest_global_rgb = None
+        self.vis_img = None
+        self.current_joint_pos = None
+        self.is_gripping = False      # 夹爪状态锁（一旦闭合就锁死）
+        self.last_sent_grip_cmd = None
 
         self.arm_joint_names = [
-            'shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 
+            'shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
             'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'
         ]
         self.gripper_joint_name = "robotiq_85_left_knuckle_joint"
@@ -63,17 +74,24 @@ class RosDiffusionManager(Node):
         self.create_subscription(Image, '/d435/image', self.img_cb, 10)
         self.create_subscription(Image, '/camera_global/image', self.global_img_cb, 10)
         self.create_subscription(JointState, '/joint_states', self.joint_cb, 10)
-        
+
         self.joint_pub = self.create_publisher(
             JointTrajectory, '/joint_trajectory_controller/joint_trajectory', 10)
-        
+
         self._gripper_action_client = ActionClient(self, GripperCommand, '/robotiq_gripper_controller/gripper_cmd')
         self._log_counter = 0
         self._act_counter = 0
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.move_client = ActionClient(self, MoveGroup, '/move_action')
+
     def send_gripper_goal(self, position):
+        if self.last_sent_grip_cmd == position: return
+        self.last_sent_grip_cmd = position
         goal_msg = GripperCommand.Goal()
         goal_msg.command.position = position
-        goal_msg.command.max_effort = 100.0 
+        goal_msg.command.max_effort = 100.0
         if not self._gripper_action_client.wait_for_server(timeout_sec=0.1): return
         self._gripper_action_client.send_goal_async(goal_msg)
 
@@ -86,38 +104,42 @@ class RosDiffusionManager(Node):
             temp_pos = [pos_dict[name] for name in self.arm_joint_names]
             temp_pos.append(pos_dict.get(self.gripper_joint_name, 0.0))
             self.current_joint_pos = temp_pos
-            
-            # 🌟 新增：打印当前关节信息（弧度），每 10 帧打印一次避免刷屏
             if getattr(self, '_log_counter', 0) % 50 == 0:
                 joint_str = ", ".join([f"{p:.2f}" for p in temp_pos[:6]])
                 self.get_logger().info(f"📊 当前关节角 (Rad): [{joint_str}] | 夹爪: {temp_pos[6]:.2f}")
             self._log_counter = getattr(self, '_log_counter', 0) + 1
-            
         except KeyError: pass
-        
+
+    def get_tcp_pose(self):
+        try:
+            t = self.tf_buffer.lookup_transform('base_link', 'tool0', rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1))
+            return np.array([t.transform.translation.x, t.transform.translation.y, t.transform.translation.z])
+        except: return None
+
     def go_home_direct(self):
         print("🏠 正在强制复位到起跑线 (Home)...")
-        self.send_gripper_goal(0.0) 
-        
+        self.is_gripping = False
+        self.last_sent_grip_cmd = None
+        self.send_gripper_goal(0.0)
+
         arm_msg = JointTrajectory()
         arm_msg.joint_names = self.arm_joint_names
         arm_p = JointTrajectoryPoint()
-        arm_p.positions = HOME_JOINTS 
-        
+        arm_p.positions = HOME_JOINTS
         arm_p.time_from_start.sec = 3
         arm_msg.points.append(arm_p)
         self.joint_pub.publish(arm_msg)
-        time.sleep(3.5) 
+        time.sleep(3.5)
         print("✅ 起跑线就绪！")
 
-    def publish_action(self, action): 
+    def publish_action(self, action):
         arm_msg = JointTrajectory()
         arm_msg.header.stamp.sec = 0
-        arm_msg.header.stamp.nanosec = 0 
+        arm_msg.header.stamp.nanosec = 0
         arm_msg.joint_names = self.arm_joint_names
-        
+
         arm_p = JointTrajectoryPoint()
-        
+
         if self.current_joint_pos is not None:
             current_arm = np.array(self.current_joint_pos[:6])
             target_arm = np.array(action[:6])
@@ -127,49 +149,137 @@ class RosDiffusionManager(Node):
             self._act_counter = getattr(self, '_act_counter', 0) + 1
             diff = target_arm - current_arm
             max_diff = np.max(np.abs(diff))
-            
-            # 🌟 修复核心 1：将 0.15 放宽到 1.0！
-            # 0.5秒内移动 1.0 弧度（57度）是安全的，不要让机械臂总是掉队！
             max_allowed = 0.3
-            
             if max_diff > max_allowed:
                 limited_diff = diff * (max_allowed / max_diff)
             else:
                 limited_diff = diff
-                
             arm_p.positions = [float(x) for x in (current_arm + limited_diff)]
         else:
             arm_p.positions = [float(x) for x in action[:6]]
-            
-        # 🌟 修改 3：清空速度要求，并给控制器 150ms 缓冲，防止急刹车发抖
-        arm_p.velocities = [] 
+
+        arm_p.velocities = []
         arm_p.accelerations = []
-        arm_p.time_from_start.nanosec = 100_000_000 
+        arm_p.time_from_start.nanosec = 100_000_000
         arm_msg.points.append(arm_p)
         self.joint_pub.publish(arm_msg)
 
+        # 修复：夹爪阈值 0.4 → 0.15，并锁死 is_gripping 状态
         target_grip = float(action[6])
-        if target_grip > 0.4:
+        if target_grip > 0.15:
+            self.is_gripping = True
+        if self.is_gripping:
             self.send_gripper_goal(0.8)
         else:
             self.send_gripper_goal(0.0)
 
-    def wait_for_completion(self, target_pos, timeout=1.0):
-        start_time = self.get_clock().now()
-        rate = self.create_rate(50) 
-        while (self.get_clock().now() - start_time).nanoseconds / 1e9 < timeout:
-            if self.current_joint_pos is not None:
-                diff = np.abs(np.array(self.current_joint_pos[:6]) - np.array(target_pos[:6]))
-                if np.max(diff) < 0.02: return True 
-            rate.sleep()
-        return False
+    def smart_extrapolate_grasp(self, p_past, p_curr, ext_dist=0.08, lift_dist=0.15):
+        print("\n⚠️ 触发【智能轨迹外推】接管控制权！")
+        if not self.move_client.wait_for_server(timeout_sec=2.0):
+            print("❌ 找不到 MoveIt 服务器，外挂失效！")
+            return
+
+        try:
+            t = self.tf_buffer.lookup_transform('base_link', 'tool0', rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0))
+            current_ori = t.transform.rotation
+
+            if p_past is None or p_curr is None:
+                vec = np.array([0.0, 0.0, -1.0])
+            else:
+                vec = p_curr - p_past
+                norm = np.linalg.norm(vec)
+                if norm < 0.01:
+                    vec = np.array([0.0, 0.0, -1.0])
+                else:
+                    vec = vec / norm
+                    if vec[2] > -0.1:
+                        vec[2] = -0.5
+                        vec = vec / np.linalg.norm(vec)
+
+            target_down = p_curr + vec * ext_dist
+            print(f"📐 AI 攻击向量: [{vec[0]:.2f}, {vec[1]:.2f}, {vec[2]:.2f}]")
+            print(f"🎯 延长终点: [{target_down[0]:.3f}, {target_down[1]:.3f}, {target_down[2]:.3f}]")
+
+            def move_cartesian_to(target_xyz, action_name):
+                print(f"👉 规划中: {action_name}...")
+                goal = MoveGroup.Goal()
+                goal.request.group_name = "ur_manipulator"
+
+                ws = WorkspaceParameters()
+                ws.header.frame_id = "base_link"
+                ws.min_corner.x, ws.min_corner.y, ws.min_corner.z = -2.0, -2.0, -2.0
+                ws.max_corner.x, ws.max_corner.y, ws.max_corner.z = 2.0, 2.0, 2.0
+                goal.request.workspace_parameters = ws
+
+                pose = Pose()
+                pose.position.x = float(target_xyz[0])
+                pose.position.y = float(target_xyz[1])
+                pose.position.z = float(target_xyz[2])
+                pose.orientation = current_ori
+
+                c = Constraints()
+                p = PositionConstraint()
+                p.header.frame_id = "base_link"
+                p.link_name = "tool0"
+                bv = BoundingVolume()
+                sp = SolidPrimitive()
+                sp.type, sp.dimensions = SolidPrimitive.SPHERE, [0.025]
+                bv.primitives.append(sp)
+                bv.primitive_poses.append(pose)
+                p.constraint_region = bv
+                c.position_constraints.append(p)
+
+                o = OrientationConstraint()
+                o.header.frame_id = "base_link"
+                o.link_name = "tool0"
+                o.orientation = pose.orientation
+                o.absolute_x_axis_tolerance = 0.25
+                o.absolute_y_axis_tolerance = 0.25
+                o.absolute_z_axis_tolerance = 0.25
+                o.weight = 1.0
+                c.orientation_constraints.append(o)
+
+                goal.request.goal_constraints.append(c)
+                goal.request.allowed_planning_time = 5.0
+                goal.request.max_velocity_scaling_factor = 0.1
+
+                future = self.move_client.send_goal_async(goal)
+                while rclpy.ok() and not future.done(): time.sleep(0.05)
+
+                if not future.result().accepted:
+                    print(f"❌ {action_name} 规划被拒绝！")
+                    return False
+
+                res_future = future.result().get_result_async()
+                while rclpy.ok() and not res_future.done(): time.sleep(0.05)
+
+                err_code = res_future.result().result.error_code.val
+                if err_code != 1:
+                    print(f"❌ {action_name} 执行失败！错误码: {err_code}")
+                    return False
+
+                print(f"✅ {action_name} 完成！")
+                return True
+
+            if move_cartesian_to(target_down, f"垂直下探 {ext_dist*100:.0f} cm"):
+                print("✊ 到达终点，强行闭合夹爪！")
+                self.send_gripper_goal(0.8)
+                time.sleep(1.0)
+                target_up = target_down + np.array([0, 0, lift_dist])
+                move_cartesian_to(target_up, f"抓取后垂直抬升 {lift_dist*100:.0f} cm")
+                print("🎉 智能轨迹外挂完成！")
+            else:
+                print("⚠️ 下潜失败，已安全截断！")
+
+        except Exception as e:
+            print(f"❌ 轨迹延伸异常: {e}")
 
     def show_vision_window(self, cv_img, objects):
         vis_img = cv_img.copy()
         for obj in objects:
             poly = np.array(obj['polygon'], dtype=np.int32)
             cv2.polylines(vis_img, [poly], True, (0, 255, 0), 2)
-            cv2.putText(vis_img, f"ID:{obj['obj_id']} {obj['class_name']}", 
+            cv2.putText(vis_img, f"ID:{obj['obj_id']} {obj['class_name']}",
                         (poly[0][0], poly[0][1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         self.vis_img = vis_img
 
@@ -179,56 +289,106 @@ def ui_logic_thread(node):
         if node.latest_rgb is None or node.latest_global_rgb is None:
             print("❌ 错误：相机数据未就绪")
             continue
-        
+
         node.go_home_direct()
 
         try:
             cv_img = node.bridge.imgmsg_to_cv2(node.latest_rgb, "bgr8")
             _, encoded = cv2.imencode('.png', cv_img)
             resp = requests.post("http://127.0.0.1:5005/detect_objects", files={'image_hand': encoded.tobytes()})
-            
+
             if resp.status_code == 200 and resp.json()['status'] == 'success':
                 res = resp.json()
                 if not res['objects']:
                     print("❌ 未识别到任何物体")
                     continue
-                    
+
                 node.show_vision_window(cv_img, res['objects'])
                 choice = input("👉 确认开始执行 (按回车继续，q 退出): ")
                 if choice.lower() == 'q': continue
-                
-                
-                node.vis_img = None 
-                print(f"🚀 ACT 轨迹执行中 (直接下发模式)...")
-                
-                # 🌟 发送重置信号，清空 LeRobot 的内部记忆队列
+
+                node.vis_img = None
+                print(f"🚀 ACT 轨迹执行中...")
+
+                # 清空 LeRobot 的内部记忆队列
                 requests.post("http://127.0.0.1:5006/reset")
-                
-                for i in range(300): # 增加一点最大步数容错
+
+                node.is_gripping = False
+                node.last_sent_grip_cmd = None
+                node._act_counter = 0
+                pose_history = {}
+                grip_debounce = 0   # 防抖：连续5步超阈值且 i>=30 才退出
+                stall_count = 0     # 悬停计数
+                stall_triggered = False
+
+                for i in range(300):
+                    loop_start = time.time()
                     if not rclpy.ok(): break
+
+                    # 悬停检测：每10步采一次 TCP 位置
+                    if i % 10 == 0:
+                        p = node.get_tcp_pose()
+                        if p is not None:
+                            pose_history[i] = p
+                            if i >= 50 and (i - 20) in pose_history:
+                                dist = np.linalg.norm(p - pose_history[i - 20])
+                                if dist < 0.003:   # 20步内位移 < 3mm
+                                    stall_count += 1
+                                else:
+                                    stall_count = 0
+                            if stall_count >= 3:
+                                print(f"🔍 [step {i}] 检测到手臂持续悬停，触发强制垂直俯冲！")
+                                stall_triggered = True
+                                break
+
                     img_h = node.bridge.imgmsg_to_cv2(node.latest_rgb, "bgr8")
                     img_g = node.bridge.imgmsg_to_cv2(node.latest_global_rgb, "bgr8")
                     _, enc_h = cv2.imencode('.png', img_h)
                     _, enc_g = cv2.imencode('.png', img_g)
                     current_state_data = json.dumps(node.current_joint_pos)
-                    
-                    act_resp = requests.post("http://127.0.0.1:5006/get_action", 
+
+                    act_resp = requests.post("http://127.0.0.1:5006/get_action",
                                     files={'image_hand': enc_h.tobytes(), 'image_global': enc_g.tobytes()},
                                     data={'current_state': current_state_data})
-                    
+
                     if act_resp.status_code == 200:
-                        action_step = act_resp.json().get('action') 
+                        action_step = act_resp.json().get('action')
                         if action_step:
-                            # 🌟 修复核心：LeRobot 返回的就是单步动作，直接发给机械臂！
                             node.publish_action(action_step)
-                            time.sleep(0.1)
-                            
-                            # 打印进度，心里有底
-                            if i % 2 == 0: 
-                                print(f"  Progress: {i}/300 | Grip_Pred: {action_step[6]:.2f}")
+
+                            # grip_debounce：连续5步超阈值且至少运行30步才触发
+                            if i >= 30 and node.is_gripping:
+                                grip_debounce += 1
+                            else:
+                                grip_debounce = 0
+
+                            if i % 2 == 0:
+                                lock_status = "🔒 已锁死" if node.is_gripping else f"等待(防抖:{grip_debounce}/5)"
+                                print(f"  Progress: {i:03d}/300 | Grip_Pred: {action_step[6]:.3f} ({lock_status})")
+
+                            if grip_debounce >= 5:
+                                print(f"🎉 模型持续闭合夹爪 5 步，确认触发，跳出循环！")
+                                break
                         else: break
                     else: break
-                print("✅ act任务流运行完毕")
+
+                    elapsed = time.time() - loop_start
+                    time.sleep(max(0.0, 0.1 - elapsed))
+
+                # 等待控制器执行完上一条指令，避免与 MoveIt 冲突
+                time.sleep(0.8)
+
+                # 先张开夹爪，让 smart_extrapolate_grasp 在到位后再闭合
+                node.send_gripper_goal(0.0)
+                time.sleep(0.5)
+
+                # 无论是夹爪触发还是悬停/超时兜底：强制垂直向下俯冲
+                p_curr = node.get_tcp_pose()
+                print(f"🎯 当前位置: {p_curr}")
+                node.smart_extrapolate_grasp(None, p_curr, ext_dist=0.12, lift_dist=0.15)
+
+                print("✅ ACT 任务流圆满结束")
+                node.go_home_direct()
             else:
                 print(f"❌ 识别服务响应异常")
         except Exception as e:

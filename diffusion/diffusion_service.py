@@ -25,7 +25,7 @@ with open(STATS_PATH, 'r') as f:
 
 # 3. 加载模型
 # 🌟 指向新一轮训练好的 200 轮权重
-MODEL_WEIGHTS_PATH = os.path.join(BASE_DIR, 'diffusion_model_epoch_200.pth')
+MODEL_WEIGHTS_PATH = os.path.join(BASE_DIR, 'diffusion_model_epoch_299.pth')
 model = DiffusionModel().to(device)
 if os.path.exists(MODEL_WEIGHTS_PATH):
     model.load_state_dict(torch.load(MODEL_WEIGHTS_PATH, map_location=device))

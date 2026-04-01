@@ -11,7 +11,7 @@ stats_path = os.path.expanduser("~/workspaces/ur_gz/robot_diffusion_data/stats.j
 if os.path.exists(dst):
     shutil.rmtree(dst)
 
-print("🔍 正在扫描原始数据集，寻找并剔除 MoveIt 发呆数据...")
+print("🔍 正在启动【智能清洗】，精准狙击半空发呆死循环...")
 z_in = zarr.open(src, mode='r')
 act_in = z_in['data/action'][:]
 img_h_in = z_in['data/obs/img_hand_eye'][:]
@@ -26,25 +26,29 @@ for end in ends_in:
     ep_a = act_in[start:end]
     ep_h = img_h_in[start:end]
     ep_g = img_g_in[start:end]
-    
+
     keep = []
     stationary_counter = 0
     for i in range(len(ep_a)):
         if i == 0:
             keep.append(i)
             continue
-        
-        # 核心逻辑：判断相邻两帧关节的绝对差值
-        diff = np.max(np.abs(ep_a[i] - ep_a[i-1]))
-        if diff < 0.001:
+
+        # 提取手臂动作差值和当前的夹爪指令
+        diff_arm = np.max(np.abs(ep_a[i][:6] - ep_a[i-1][:6]))
+        grip_val = ep_a[i][6]
+
+        # 核心逻辑：手臂没动且夹爪张开 -> 发呆帧，删除
+        # grip_val >= 0.3 对应夹爪约 70% 闭合（实际最大值 0.419），判定为抓取阶段
+        if diff_arm < 0.0015 and grip_val < 0.3:
             stationary_counter += 1
         else:
             stationary_counter = 0
-            
-        # 🌟 最多允许保留 3 帧静止缓冲，超过的废片直接扬了！
-        if stationary_counter <= 3:
+
+        # 1 帧缓冲防抽搐；抓取阶段（grip >= 0.3）无条件保留所有静止帧
+        if stationary_counter <= 1 or grip_val >= 0.3:
             keep.append(i)
-            
+
     all_h.append(ep_h[keep])
     all_g.append(ep_g[keep])
     all_act.append(ep_a[keep])
@@ -56,9 +60,9 @@ full_h = np.concatenate(all_h, axis=0)
 full_g = np.concatenate(all_g, axis=0)
 full_act = np.concatenate(all_act, axis=0)
 
-print(f"✅ 清洗完成！总帧数从 {len(act_in)} 暴降至 {len(full_act)}！精华已提取。")
+print(f"✅ 智能清洗完成！从 {len(act_in)} 帧中剔除了 {len(act_in) - len(full_act)} 帧废数据！")
 
-print("📦 正在写入新的干净 Zarr (由于启动了高压缩，需要稍等半分钟)...")
+print("📦 正在写入全新的纯净 Zarr...")
 root = zarr.open(dst, mode='w')
 data_grp = root.create_group('data')
 obs_grp = data_grp.create_group('obs')
@@ -71,7 +75,7 @@ data_grp.create_dataset('action', data=full_act, chunks=(1000, 7))
 meta_grp = root.create_group('meta')
 meta_grp.create_dataset('episode_ends', data=np.array(new_ends, dtype=np.int64))
 
-print("📊 正在重新计算严格动作边界 (stats.json)...")
+print("📊 重新计算动作边界 (stats.json)...")
 stats = {
     "action_min": full_act.min(axis=0).tolist(),
     "action_max": full_act.max(axis=0).tolist()
@@ -79,7 +83,9 @@ stats = {
 with open(stats_path, "w") as f:
     json.dump(stats, f)
 
-# 直接覆盖旧数据集
+print(f"✅ 清洗完毕！总帧数: {len(act_in)} → {len(full_act)}，删除 {len(act_in) - len(full_act)} 帧")
+
+# 用清洁版覆盖原始数据集
 shutil.rmtree(src)
 os.rename(dst, src)
-print("🚀 原始数据集已被纯净版覆盖！你可以直接去重新训练了！")
+print("🚀 原始数据集已被纯净版覆盖，可以直接重新训练！")
