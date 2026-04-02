@@ -155,7 +155,11 @@ class RosDiffusionManager(Node):
             else:
                 diff = target_arm - current_arm
                 max_allowed = 0.03 if tcp_z < 0.65 else 0.05
-                clipped_diff = np.clip(diff, -max_allowed, max_allowed)
+                # 指尖 = tool0 - 0.112m，盒顶 z=0.55，故 tool0 < 0.662 时指尖已入盒
+                pan_limit = 0.005 if tcp_z < 0.67 else max_allowed
+                per_joint_limits = np.array([pan_limit, max_allowed, max_allowed,
+                                             max_allowed, max_allowed, max_allowed])
+                clipped_diff = np.clip(diff, -per_joint_limits, per_joint_limits)
                 arm_p.positions = [float(x) for x in (current_arm + clipped_diff)]
         else:
             arm_p.positions = [float(x) for x in action[:6]]
@@ -174,7 +178,8 @@ class RosDiffusionManager(Node):
 
         # 夹爪门控：阈值提高到 0.25，且 z < 0.62m 时才允许锁定（确保臂已到罐子上方）
         target_grip = float(action[6])
-        if target_grip > 0.25 and getattr(self, '_last_tcp_z', 1.0) < 0.62:
+        # 指尖到罐子中心 z=0.46，tool0 需到 0.46+0.112=0.572
+        if target_grip > 0.25 and getattr(self, '_last_tcp_z', 1.0) < 0.58:
             self.is_gripping = True
         if self.is_gripping:
             self.send_gripper_goal(0.8)
@@ -399,7 +404,8 @@ def ui_logic_thread(node):
                     node.send_gripper_goal(0.8)
                     time.sleep(0.3)
                     # 自适应俯冲：目标 z=0.58m（罐子顶端），不够低就多冲一点
-                    ext_dist = max(0.02, p_curr[2] - 0.58) if p_curr is not None else 0.06
+                    # tool0 目标 z = 罐中心(0.46) + 夹爪长(0.112) = 0.572
+                    ext_dist = max(0.02, p_curr[2] - 0.572) if p_curr is not None else 0.10
                     print(f"  自适应俯冲距离: {ext_dist*100:.1f} cm (当前z={p_curr[2]:.3f})")
                     node.smart_extrapolate_grasp(None, p_curr, ext_dist=ext_dist, lift_dist=0.15)
                 else:
