@@ -475,9 +475,15 @@ def main(args=None):
                 
                 selected_obj = objects[0]
                 grasps = selected_obj['grasps']
-                
-                print(f"\n✨ 识别成功！[自动模式] 锁定最佳目标: {selected_obj['class_name']}")
-                print(f"🎯 执行最优抓取点位 (置信度: {grasps[0]['score']:.3f})")
+
+                depth_rank = selected_obj.get('depth_rank', 1)
+                avg_depth = selected_obj.get('avg_depth_m', -1.0)
+                total = len(objects)
+                print(f"\n✨ 识别成功！共检测到 {total} 个物体，按深度优先级自动排序：")
+                for obj in objects:
+                    tag = " <-- 当前目标" if obj is selected_obj else ""
+                    print(f"   #{obj.get('depth_rank','-')} {obj['class_name']} | 深度: {obj.get('avg_depth_m',0):.3f}m{tag}")
+                print(f"🎯 锁定第 {depth_rank} 优先目标: {selected_obj['class_name']} | 深度: {avg_depth:.3f}m | 置信度: {grasps[0]['score']:.3f}")
                 
                 mgr_node.execute_grasp_sequence(grasps[0])
                 

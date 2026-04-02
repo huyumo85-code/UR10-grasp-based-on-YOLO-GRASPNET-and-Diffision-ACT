@@ -70,7 +70,10 @@ def draw_results(img, objects_data, fx, fy, cx, cy):
             # 寻找多边形最高点来写字，防止标签重叠
             top_y_idx = np.argmin(pts[:, 0, 1])
             text_pos = (pts[top_y_idx, 0, 0], max(pts[top_y_idx, 0, 1] - 10, 10))
-            cv2.putText(img, f"Obj {obj_id}: {cls_name}", text_pos,
+            depth_rank = obj.get('depth_rank', obj_id)
+            avg_depth = obj.get('avg_depth_m', 0.0)
+            label = f"#{depth_rank} {cls_name} ({avg_depth:.2f}m)"
+            cv2.putText(img, label, text_pos,
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 144, 30), 2)
 
         # 2. 绘制落在该物体精确轮廓内的抓取点
@@ -152,6 +155,22 @@ def predict():
         if len(detected_objects) == 0:
             cv2.imwrite(vis_save_path, yolo_results[0].plot())
             return jsonify({"status": "fail", "msg": "【YOLO 锅】视野中未检测到目标物体的实例分割掩码！"})
+
+        # ================== 🌟 深度优先级评估：按平均深度升序排列（最近相机 = 最顶层 = 最高优先级）==================
+        for obj in detected_objects:
+            obj_mask = np.zeros((h, w), dtype=np.uint8)
+            pts = np.array(obj["polygon"], np.int32).reshape((-1, 1, 2))
+            cv2.fillPoly(obj_mask, [pts], 255)
+            depth_vals = depth[obj_mask > 0]
+            valid_depth = depth_vals[depth_vals > 0]
+            obj["avg_depth_m"] = float(np.mean(valid_depth)) / 1000.0 if len(valid_depth) > 0 else float('inf')
+
+        detected_objects.sort(key=lambda x: x["avg_depth_m"])
+        for i, obj in enumerate(detected_objects):
+            obj["depth_rank"] = i + 1
+        print(f"📊 深度排序完成，共 {len(detected_objects)} 个物体：")
+        for obj in detected_objects:
+            print(f"   #{obj['depth_rank']} {obj['class_name']} | 平均深度: {obj['avg_depth_m']:.3f}m")
 
         # ================== 🌟 第二阶段：GraspNet 推理 (已接入 YOLO 掩码优化) ==================
         camera = CameraInfo(w, h, fx, fy, cx, cy, 1000.0)
