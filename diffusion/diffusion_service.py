@@ -25,7 +25,7 @@ with open(STATS_PATH, 'r') as f:
 
 # 3. 加载模型
 # 🌟 指向新一轮训练好的 200 轮权重
-MODEL_WEIGHTS_PATH = os.path.join(BASE_DIR, 'diffusion_model_epoch_499.pth')
+MODEL_WEIGHTS_PATH = os.path.join(BASE_DIR, 'diffusion_model_epoch_250.pth')
 model = DiffusionModel().to(device)
 if os.path.exists(MODEL_WEIGHTS_PATH):
     model.load_state_dict(torch.load(MODEL_WEIGHTS_PATH, map_location=device))
@@ -62,8 +62,13 @@ def reset():
     print("🧠 历史记忆已清空，准备开始新的轨迹...")
     return jsonify({"status": "success"})
 
+DEBUG_DIR = os.path.join(BASE_DIR, 'debug_imgs')
+os.makedirs(DEBUG_DIR, exist_ok=True)
+_call_count = 0
+
 @app.route('/get_action', methods=['POST'])
 def get_action():
+    global _call_count
     try:
         file_h = request.files['image_hand'].read()
         file_g = request.files['image_global'].read()
@@ -71,6 +76,12 @@ def get_action():
         
         img_h_bgr = cv2.imdecode(np.frombuffer(file_h, np.uint8), cv2.IMREAD_COLOR)
         img_g_bgr = cv2.imdecode(np.frombuffer(file_g, np.uint8), cv2.IMREAD_COLOR)
+
+        # 每隔 30 帧保存一次原始图像，用于诊断相机视角
+        if _call_count % 30 == 0:
+            cv2.imwrite(os.path.join(DEBUG_DIR, f'hand_{_call_count:04d}.jpg'), img_h_bgr)
+            cv2.imwrite(os.path.join(DEBUG_DIR, f'global_{_call_count:04d}.jpg'), img_g_bgr)
+        _call_count += 1
         
         curr_state_raw = np.array(json.loads(state_str), dtype=np.float32)
         curr_state_norm = (curr_state_raw - a_min) / (a_max - a_min + 1e-6) * 2 - 1

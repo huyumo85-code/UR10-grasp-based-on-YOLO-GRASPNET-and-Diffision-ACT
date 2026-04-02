@@ -1,4 +1,0 @@
-git status
-git add .
-git commit -m "这里写你的更新说明"
-git push

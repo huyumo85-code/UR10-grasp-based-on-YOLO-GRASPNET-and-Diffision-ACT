@@ -147,8 +147,11 @@ class DiffusionModel(nn.Module):
             nn.Linear(in_dim, 1024),
             nn.LayerNorm(1024),
             nn.GELU(),
+            nn.Dropout(0.1),
             ResBlock(1024),
+            nn.Dropout(0.1),
             ResBlock(1024),
+            nn.Dropout(0.1),
             ResBlock(1024),
             nn.Linear(1024, action_feat_dim)
         )

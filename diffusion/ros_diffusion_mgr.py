@@ -114,28 +114,38 @@ class RosDiffusionManager(Node):
         time.sleep(3.5) 
         print("✅ 起跑线就绪！")
 
-    def publish_action(self, action): 
+    def publish_action(self, action):
         arm_msg = JointTrajectory()
         arm_msg.header.stamp = self.get_clock().now().to_msg()
         arm_msg.joint_names = self.arm_joint_names
         arm_p = JointTrajectoryPoint()
-        arm_p.positions = [float(x) for x in action[:6]]
-        
+
+        # 每步限制最大关节位移 0.08 rad，防止初始跳变
+        MAX_DELTA = 0.08
         if self.current_joint_pos is not None:
-            vels = [(float(x) - cur) / 0.2 for x, cur in zip(action[:6], self.current_joint_pos[:6])]
+            clipped = [
+                float(np.clip(action[k], self.current_joint_pos[k] - MAX_DELTA, self.current_joint_pos[k] + MAX_DELTA))
+                for k in range(6)
+            ]
+        else:
+            clipped = [float(x) for x in action[:6]]
+
+        arm_p.positions = clipped
+
+        if self.current_joint_pos is not None:
+            vels = [(clipped[k] - self.current_joint_pos[k]) / 0.2 for k in range(6)]
             arm_p.velocities = [float(np.clip(v, -1.0, 1.0)) for v in vels]
         else:
             arm_p.velocities = [0.0] * 6
-            
+
         arm_p.time_from_start.sec = 0
-        arm_p.time_from_start.nanosec = 200_000_000 
+        arm_p.time_from_start.nanosec = 200_000_000
         arm_msg.points.append(arm_p)
         self.joint_pub.publish(arm_msg)
 
+        # 夹爪加死区：< 0.3 视为张开，>= 0.3 才闭合
         target_grip = float(action[6])
-        if target_grip > 0.15: self.is_gripping = True
-        if self.is_gripping: self.send_gripper_goal(0.8)
-        else: self.send_gripper_goal(0.0)
+        self.send_gripper_goal(0.8 if target_grip >= 0.3 else 0.0)
 
     # ==============================================================
     # 🌟 修复版外挂：带错误检验与放宽约束的轨迹延伸
@@ -285,27 +295,26 @@ def ui_logic_thread(node):
                 requests.post("http://127.0.0.1:5006/reset")
                 
                 ensembler = TemporalEnsembler(horizon=16)
-                node.is_gripping = False
-                grip_debounce = 0
-                stall_count = 0
                 pose_history = {}
+                stall_count = 0
 
                 for i in range(300):
                     loop_start = time.time()
                     if not rclpy.ok(): break
 
+                    # Z 轴悬停检测：step>=60 后，20步内下降 < 5mm 则计数
                     if i % 10 == 0:
                         p = node.get_tcp_pose()
                         if p is not None:
                             pose_history[i] = p
-                            if i >= 50 and (i - 20) in pose_history:
-                                dist = np.linalg.norm(p - pose_history[i - 20])
-                                if dist < 0.003:
+                            if i >= 60 and (i - 20) in pose_history:
+                                z_drop = pose_history[i - 20][2] - p[2]
+                                if z_drop < 0.005:
                                     stall_count += 1
                                 else:
                                     stall_count = 0
                             if stall_count >= 3:
-                                print(f"🔍 [step {i}] 检测到手臂持续悬停，触发强制垂直俯冲！")
+                                print(f"🔍 [step {i}] Z轴悬停，交由 MoveIt 接管俯冲！")
                                 break
 
                     img_h = node.bridge.imgmsg_to_cv2(node.latest_rgb, "bgr8")
@@ -324,30 +333,37 @@ def ui_logic_thread(node):
                             smooth_action = ensembler.update_and_get(action_traj, lookahead=2)
                             node.publish_action(smooth_action)
 
-                            if i >= 30 and node.is_gripping:
-                                grip_debounce += 1
-                            else:
-                                grip_debounce = 0
-
                             if i % 10 == 0:
-                                lock_status = "🔒 已锁死闭合" if node.is_gripping else f"等待触发(防抖:{grip_debounce}/5)"
-                                print(f"📍 Progress: {i:03d}/300 | 夹爪意图: {smooth_action[6]:.3f} ({lock_status})")
-
-                            if grip_debounce >= 5:
-                                print(f"🎉 模型持续闭合夹爪 5 步，确认触发，跳出循环！")
-                                break
+                                j_names = ['pan', 'lift', 'elbow', 'w1', 'w2', 'w3']
+                                target_joints = smooth_action[:6]
+                                curr_joints = node.current_joint_pos[:6] if node.current_joint_pos else [0]*6
+                                p = node.get_tcp_pose()
+                                tcp_z = p[2] if p is not None else 0.0
+                                print(f"📍 Progress: {i:03d}/300 | 夹爪: {smooth_action[6]:.3f} | z={tcp_z:.4f} | stall={stall_count}")
+                                print(f"  目标: {' '.join(f'{j_names[k]}={target_joints[k]:+.3f}' for k in range(6))}")
+                                print(f"  当前: {' '.join(f'{j_names[k]}={curr_joints[k]:+.3f}' for k in range(6))}")
                         else: break
                     else: break
 
                     elapsed = time.time() - loop_start
                     time.sleep(max(0.0, 0.1 - elapsed))
 
-                # 无论模型自主完成还是悬停兜底，都先等控制器稳定
-                time.sleep(0.8)
-                node.send_gripper_goal(0.0)
-                time.sleep(0.5)
+                # 停止指令，清空控制器 pending 队列
+                if node.current_joint_pos is not None:
+                    stop_msg = JointTrajectory()
+                    stop_msg.joint_names = node.arm_joint_names
+                    stop_p = JointTrajectoryPoint()
+                    stop_p.positions = [float(x) for x in node.current_joint_pos[:6]]
+                    stop_p.time_from_start.sec = 0
+                    stop_p.time_from_start.nanosec = 100_000_000
+                    stop_msg.points.append(stop_p)
+                    node.joint_pub.publish(stop_msg)
+                time.sleep(1.5)
+
                 p_curr = node.get_tcp_pose()
-                print(f"🎯 当前位置: {p_curr}，执行垂直俯冲兜底...")
+                print(f"📌 当前位置: {p_curr}，MoveIt 接管俯冲 + 抓取...")
+                node.send_gripper_goal(0.0)
+                time.sleep(0.3)
                 node.smart_extrapolate_grasp(None, p_curr, ext_dist=0.12, lift_dist=0.15)
 
                 print("✅ 整个任务流圆满结束")

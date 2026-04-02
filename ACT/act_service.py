@@ -8,6 +8,7 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 
 app = Flask(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_debug_call_count = 0
 
 CHECKPOINT_PATH = os.path.expanduser("~/workspaces/ur_gz/ACT/outputs/train/2026-03-29/14-22-31_act/checkpoints/080000/pretrained_model")
 
@@ -33,17 +34,20 @@ def preprocess(img_bgr):
 
 @app.route('/get_action', methods=['POST'])
 def get_action():
+    global _debug_call_count
     try:
-        file_h = request.files['image_hand'].read()   
-        file_g = request.files['image_global'].read() 
-        state_str = request.form.get('current_state') 
-        
+        file_h = request.files['image_hand'].read()
+        file_g = request.files['image_global'].read()
+        state_str = request.form.get('current_state')
+
         img_h = cv2.imdecode(np.frombuffer(file_h, np.uint8), cv2.IMREAD_COLOR)
         img_g = cv2.imdecode(np.frombuffer(file_g, np.uint8), cv2.IMREAD_COLOR)
-        
-        # 依然保留图片调试，防相机接反
-        cv2.imwrite("debug_high.png", img_g)
-        cv2.imwrite("debug_low.png", img_h)
+
+        # 每50帧写一次调试图，避免 10Hz 持续 I/O 影响控制频率
+        if _debug_call_count % 50 == 0:
+            cv2.imwrite("debug_high.png", img_g)
+            cv2.imwrite("debug_low.png", img_h)
+        _debug_call_count += 1
 
         # 🌟 直接使用 ROS 传过来的完美状态！不需要任何重新排序了！
         curr_state_ros = np.array(json.loads(state_str), dtype=np.float32)

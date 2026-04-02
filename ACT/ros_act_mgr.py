@@ -104,9 +104,6 @@ class RosDiffusionManager(Node):
             temp_pos = [pos_dict[name] for name in self.arm_joint_names]
             temp_pos.append(pos_dict.get(self.gripper_joint_name, 0.0))
             self.current_joint_pos = temp_pos
-            if getattr(self, '_log_counter', 0) % 50 == 0:
-                joint_str = ", ".join([f"{p:.2f}" for p in temp_pos[:6]])
-                self.get_logger().info(f"📊 当前关节角 (Rad): [{joint_str}] | 夹爪: {temp_pos[6]:.2f}")
             self._log_counter = getattr(self, '_log_counter', 0) + 1
         except KeyError: pass
 
@@ -147,26 +144,37 @@ class RosDiffusionManager(Node):
                 targets = [round(x, 2) for x in target_arm.tolist()]
                 print(f"🎯 Step {self._act_counter:3d} | Target Joints: {targets}")
             self._act_counter = getattr(self, '_act_counter', 0) + 1
-            diff = target_arm - current_arm
-            max_diff = np.max(np.abs(diff))
-            max_allowed = 0.3
-            if max_diff > max_allowed:
-                limited_diff = diff * (max_allowed / max_diff)
+            # 统一获取 TCP 高度，用于 delta 截断和夹爪 z 门控
+            tcp = self.get_tcp_pose()
+            tcp_z = tcp[2] if tcp is not None else getattr(self, '_last_tcp_z', 1.0)
+            self._last_tcp_z = tcp_z
+
+            # 夹爪一旦锁死，手臂冻结在当前位置，不再发新目标
+            if self.is_gripping:
+                arm_p.positions = [float(x) for x in current_arm]
             else:
-                limited_diff = diff
-            arm_p.positions = [float(x) for x in (current_arm + limited_diff)]
+                diff = target_arm - current_arm
+                max_allowed = 0.03 if tcp_z < 0.65 else 0.05
+                clipped_diff = np.clip(diff, -max_allowed, max_allowed)
+                arm_p.positions = [float(x) for x in (current_arm + clipped_diff)]
         else:
             arm_p.positions = [float(x) for x in action[:6]]
 
+        # 绝对位置安全边界：防止模型累积漂移到离 HOME 过远的位置
+        _home = np.array(HOME_JOINTS)
+        _margin = np.array([0.35, 0.5, 0.6, 0.7, 0.6, 1.5])
+        safe_pos = np.clip(np.array(arm_p.positions), _home - _margin, _home + _margin)
+        arm_p.positions = [float(x) for x in safe_pos]
+
         arm_p.velocities = []
         arm_p.accelerations = []
-        arm_p.time_from_start.nanosec = 100_000_000
+        arm_p.time_from_start.nanosec = 200_000_000
         arm_msg.points.append(arm_p)
         self.joint_pub.publish(arm_msg)
 
-        # 修复：夹爪阈值 0.4 → 0.15，并锁死 is_gripping 状态
+        # 夹爪门控：阈值提高到 0.25，且 z < 0.62m 时才允许锁定（确保臂已到罐子上方）
         target_grip = float(action[6])
-        if target_grip > 0.15:
+        if target_grip > 0.25 and getattr(self, '_last_tcp_z', 1.0) < 0.62:
             self.is_gripping = True
         if self.is_gripping:
             self.send_gripper_goal(0.8)
@@ -320,6 +328,7 @@ def ui_logic_thread(node):
                 grip_debounce = 0   # 防抖：连续5步超阈值且 i>=30 才退出
                 stall_count = 0     # 悬停计数
                 stall_triggered = False
+                grip_success = False
 
                 for i in range(300):
                     loop_start = time.time()
@@ -356,18 +365,21 @@ def ui_logic_thread(node):
                         if action_step:
                             node.publish_action(action_step)
 
-                            # grip_debounce：连续5步超阈值且至少运行30步才触发
-                            if i >= 30 and node.is_gripping:
+                            # grip_debounce：连续5步模型原始输出 > 0.25 且至少运行30步才触发
+                            if i >= 30 and action_step[6] > 0.25:
                                 grip_debounce += 1
                             else:
                                 grip_debounce = 0
 
-                            if i % 2 == 0:
+                            if i % 10 == 0:
+                                p = node.get_tcp_pose()
+                                tcp_z = p[2] if p is not None else 0.0
                                 lock_status = "🔒 已锁死" if node.is_gripping else f"等待(防抖:{grip_debounce}/5)"
-                                print(f"  Progress: {i:03d}/300 | Grip_Pred: {action_step[6]:.3f} ({lock_status})")
+                                print(f"  Progress: {i:03d}/300 | Grip: {action_step[6]:.3f} | z={tcp_z:.4f} | {lock_status}")
 
                             if grip_debounce >= 5:
                                 print(f"🎉 模型持续闭合夹爪 5 步，确认触发，跳出循环！")
+                                grip_success = True
                                 break
                         else: break
                     else: break
@@ -378,14 +390,24 @@ def ui_logic_thread(node):
                 # 等待控制器执行完上一条指令，避免与 MoveIt 冲突
                 time.sleep(0.8)
 
-                # 先张开夹爪，让 smart_extrapolate_grasp 在到位后再闭合
-                node.send_gripper_goal(0.0)
-                time.sleep(0.5)
-
-                # 无论是夹爪触发还是悬停/超时兜底：强制垂直向下俯冲
                 p_curr = node.get_tcp_pose()
                 print(f"🎯 当前位置: {p_curr}")
-                node.smart_extrapolate_grasp(None, p_curr, ext_dist=0.12, lift_dist=0.15)
+
+                if grip_success:
+                    # 模型已确认夹住，保持夹爪闭合，自适应俯冲对准罐子顶端后抬升
+                    print("🎉 夹爪确认夹住，保持闭合，自适应对准罐顶...")
+                    node.send_gripper_goal(0.8)
+                    time.sleep(0.3)
+                    # 自适应俯冲：目标 z=0.58m（罐子顶端），不够低就多冲一点
+                    ext_dist = max(0.02, p_curr[2] - 0.58) if p_curr is not None else 0.06
+                    print(f"  自适应俯冲距离: {ext_dist*100:.1f} cm (当前z={p_curr[2]:.3f})")
+                    node.smart_extrapolate_grasp(None, p_curr, ext_dist=ext_dist, lift_dist=0.15)
+                else:
+                    # 悬停超时或模型未触发夹爪：张爪后俯冲兜底
+                    print("⚠️ 未确认夹住，张爪俯冲兜底...")
+                    node.send_gripper_goal(0.0)
+                    time.sleep(0.5)
+                    node.smart_extrapolate_grasp(None, p_curr, ext_dist=0.12, lift_dist=0.15)
 
                 print("✅ ACT 任务流圆满结束")
                 node.go_home_direct()

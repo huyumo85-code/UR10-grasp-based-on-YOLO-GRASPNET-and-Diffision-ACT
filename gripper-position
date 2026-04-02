@@ -1,0 +1,25 @@
+# ==================== 夹爪配置（已100%正确） ====================
+GRIPPER_CONFIG = {
+    "finger_pose": {
+        "left": {
+            "closed":  {"translation": [0.025, 0.000, 0.112]},
+            "open":    {"translation": [0.068, 0.000, 0.098]},
+        },
+        "right": {
+            "closed":  {"translation": [-0.025, 0.000, 0.112]},
+            "open":    {"translation": [-0.068, 0.000, 0.098]},
+        }
+    },
+    "width": {
+        "closed": 0.050,    # 0.025 - (-0.025) = 0.050 m
+        "open":   0.136,    # 0.068 - (-0.068) = 0.136 m
+        "unit": "m"
+    },
+    "controller": {
+        "activate_cmd": "ros2 control load_controller robotiq_gripper_controller --set-state active",
+        "control_topic": "/robotiq_gripper_controller/command",
+        "open_value": 255,
+        "closed_value": 0
+    }
+}
+
